@@ -1,0 +1,117 @@
+import numpy as np # поддерживает матрицы, массивы, мат.функции для них
+import pandas as pd # библиотека для анализа данных
+from scipy.stats import f
+from scipy.spatial.distance import mahalanobis
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+# В переменную FEATURES записываем названия показателей
+FEATURES = ['x1','x2','x3','x4','x5','x6','x7','x8','x9','x10','x11','x12','x13','x14','x15','x16','x17',
+            'x18','x19','x20','x21','x22','x23','x24','x25','x26','x27','x28','x29','x30','x31','x32','x33','x34','x35','x36','x37','x38','x39','x40','x41','x42','x43','x44','x45','x46','x47','x48','x49','x50','x51','x52','x53','x54','x55','x56','x57','x58']
+data = pd.read_excel('C:/Users/zheny/Desktop/УИР/очищенные_данные.xlsx',0)
+data
+
+data_to_excel = data[FEATURES]
+def gen_train_data(data, features, train_samples=None):
+    if train_samples: # если опциональный параметр задан
+        train_data = pd.DataFrame() # создаем тренировочную выборку, пока пустую
+        for cls, samples in train_samples.items(): # в cls записываем номера классов, в samples список объектов этого класса
+            train_samps = data[features].loc[samples] # выбираем объекты обучающей выборки
+            train_samps["Class"] = cls # добавляем к ним колонку с номером класса
+            train_data = pd.concat([train_data, train_samps]) # concat - функция объединения таблиц
+    else:
+        assert data.shape[1] == len(features) + 1 # если в исходном файле нет доп.колонки с разбиением, выдаст ошибку
+        train_data = data.dropna() # берем в тренировочную выборку только те строки, где проставлены классы
+        cls_col = train_data.drop(columns=features).columns[0] 
+        train_data = train_data.rename({cls_col: "Class"}, axis=1) # переименовываем колонку с обучающей выборкой на  "Class"
+    train_data = train_data.astype({"Class": 'int32'}) # присваем колонке "Class" тип int
+    return train_data
+    
+    # если классы заданы в файле - TRAIN_SAMPLES надо удалить
+train_data = gen_train_data(data, FEATURES)
+train_data # смотрим результаты работы функции gen_train_data
+data_to_excel["Train sample"] = train_data.Class
+# проведем расчет матрицы рассеяния 
+
+def scatter_matrix(samples):
+    if isinstance(samples, pd.Series):
+        samples = samples.to_frame()
+    d = samples - samples.mean()
+    res = np.zeros((d.shape[1], d.shape[1]))
+    for _, row in d.iterrows():
+        col = row.to_frame()
+        res += np.dot(col,col.T)
+    return res
+    # проведем расчет внутриклассовых матриц разброса
+
+def classes_scatter_matrix(samples, labels):
+    A = np.zeros((samples.shape[1], samples.shape[1]))
+    for cls in labels.unique():
+        A += scatter_matrix(samples[labels == cls])
+    return A
+    # выведем ковариационную матрицу
+# она рассчитывается как классовая матрица рассеяния "classes_scatter_matrix", деленная на (кол-во объектов - кол-во классов)
+
+cov = pd.DataFrame(
+    classes_scatter_matrix(train_data[FEATURES], train_data.Class) / (train_data.shape[0] - train_data.Class.unique().size), 
+    index=FEATURES, 
+    columns=FEATURES
+)
+
+cov
+# "обучаем" модель с помощью метода fit класса LinearDiscriminantAnalysis 
+# в метод fit передаем исходные данные
+lda = LinearDiscriminantAnalysis().fit(train_data[FEATURES], train_data.Class)
+# выведем средние значения параметров для каждого класса обучающей выборки
+means = pd.DataFrame(lda.means_, index=lda.classes_, columns=FEATURES)
+means
+def get_df_coef(lda, features):
+    if lda.classes_.size == 2: #если 2 класса, то lda вернет разность коэффициентов функций
+        return pd.DataFrame(
+            np.concatenate([lda.intercept_, lda.coef_.ravel()]),
+            index=["Intercept"] + features,
+            columns=["Discriminant F"]
+        )
+# если 3 и более классов, то lda вернет несколько функций (аналогично ППП Statistica)
+    return pd.DataFrame(
+        np.vstack([lda.intercept_, lda.coef_.T]),
+        index=["Intercept"] + features,
+        columns=lda.classes_
+    )
+    df_coef = get_df_coef(lda, FEATURES) # применим эту функцию для наших параметров
+df_coef
+def calc_mahalanobis_square_dist(centers, samples, cov):
+    # создаем матрицу расстояний между классами и объекnами
+    res = pd.DataFrame(index=samples.index, columns=centers.index)
+    for i in centers.index: # проходим по всем центрам классов
+        for j in samples.index: # проходим по всем объектам
+            # считаем расстояние между текущим классом и объектом
+            res[i][j] = mahalanobis(centers.loc[i], samples.loc[j], np.linalg.inv(cov)) ** 2 
+    res.head(10)        
+    return res
+    # выведем квадраты расстояний Махаланобиса между классами
+center_distance = calc_mahalanobis_square_dist(means, means, cov)
+center_distance
+lda.priors_ 
+def LDA_predict(lda, X):
+    return pd.DataFrame(
+        lda.predict(X),
+        columns=["Class"],
+        index=X.index
+    )
+    lda_predict_train = LDA_predict(lda, train_data[FEATURES])
+# сравниваем полученные классы с теми, которые были заданы в начале, и смотрим долю совпадения
+(lda_predict_train.Class == train_data.Class).value_counts(normalize=True)
+lda_predict = LDA_predict(lda, data[FEATURES])
+lda_predict.head
+data_to_excel["Results lda"] = lda_predict
+samp_dist = calc_mahalanobis_square_dist(means, data[FEATURES], cov)
+samp_dist
+data_to_excel = pd.concat([data_to_excel, samp_dist.add_prefix("lda mahalanobis ")], axis=1)
+def LDA_predict_proba(lda, X):
+    return pd.DataFrame(
+        lda.predict_proba(X),
+        columns=lda.classes_,
+        index=X.index
+    )
+    lda_post_prob = LDA_predict_proba(lda, data[FEATURES])
+lda_post_prob
+data_to_excel = pd.concat([data_to_excel, lda_post_prob.add_prefix("lda post prob ")], axis=1)
